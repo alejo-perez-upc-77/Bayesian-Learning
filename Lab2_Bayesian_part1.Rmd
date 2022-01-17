@@ -1,0 +1,280 @@
+---
+title: "Lab2_Bayesian"
+author: "Alejo Perez Gomez, Martynas Lukosevicius"
+date: "22/04/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+```
+
+## 1. Linear and polynomial regression
+
+### a)
+
+First, library loading and hyperparameter creation
+```{r include=FALSE, message=FALSE, warning=FALSE }
+library("readr")
+library("mvtnorm")
+data = read_tsv("TempLinkoping.txt", col_names = TRUE)
+
+y_aux <- rep(NA, nrow(data))
+  
+for (idx in 1:nrow(data)){
+    if (!is.na(data$temp[idx])){
+    y_aux[idx] <-data$temp[idx]
+  }
+  else {y_aux[idx] <-data$temp[idx]}
+}
+    
+
+X = matrix(data = c(rep(1,nrow(data)), unlist(data["time"]), unlist(data["time"]^2)), ncol = 3)
+Y <-  y_aux
+
+mu0 = matrix(c(-8,100,-100))
+omega0 = 0.6 * diag(3)
+v0 = 4 
+var0 = 5 
+ndraws <- 10
+
+```
+
+Variance generation drawing from  $\sigma \sim inv- \chi^2(v_0,\sigma^2_0)$
+```{r }
+
+x = rchisq(ndraws,v0)
+var = (v0*var0)/x
+```
+
+Betas generation using variance drawing from conjugate normal $\beta \sim N(\mu_0,\sigma^2_0\Omega_o^{-1})$
+```{r }
+beta = function(mu, var, omega){
+  sigm <- var*solve(omega)
+  return(rmvnorm(1,mean = mu, sigma = sigm))
+}
+betasamples = sapply(var, beta, mu = mu0, omega = omega0)
+```
+
+Regression and noise addition distributed by $\epsilon \sim N(0,I\sigma^2)$
+
+```{r }
+curves = X %*% betasamples
+curves_var = curves 
+
+```
+
+Plot of the regression curves 
+
+```{r message=FALSE, warning=FALSE}
+plot(x=unlist(data["time"]) , y = Y, type="l", main= "Actual data and regression curves", xlab = "time", ylab = "temp")
+apply(curves_var,2,lines, x = unlist(data["time"]), col = "red")
+```
+We will not change hyperparameters as curves envelope the actual temperature target data and it they resemble quite well the parabolic shape.
+
+### b) 
+#### i.
+
+Histogram for marginal posterior distribution of parameters
+
+```{r message=FALSE, warning=FALSE}
+
+# Ordinary squares results calculation
+ols <- solve(t(X)%*%X) %*% t(X)%*% Y
+
+# Calculation of posterior parameters
+omegan <- t(X)%*%X + omega0
+mun <- solve(omegan) %*% (t(X)%*%X %*% ols + omega0 %*% mu0)
+vn <- v0+nrow(data)
+vnsigma2n <-  v0 * var0 + (t(Y)%*% Y  + t(mu0) %*% omega0 %*% mu0 - t(mun) %*% omegan %*% mun)
+
+```
+
+Simulation of $\beta\mid\sigma^2,y \sim N[\mu_n, \sigma^2\Omega^{-1}_n]$ by means of $\sigma^2\mid y \sim inv-\chi^2(v_n,\sigma^2_n)$ 
+
+```{r message=FALSE, warning=FALSE}
+
+simpost <- function(n){
+  
+  ## generate variance 
+  # inv -chi2(v0,sigma20)
+  x = rchisq(n,vn)
+  var = as.vector(vnsigma2n)/x
+
+  betasamples = sapply(var, beta, mu = mun, omega = omegan)
+  
+  return(cbind(t(betasamples), var))
+}
+
+```
+
+Histogram of draws
+
+```{r message=FALSE, warning=FALSE}
+variables_post = simpost(1000) 
+par(mfrow=c(2,2))
+hist(variables_post[,1], main = "beta_1", breaks = 50, xlab = "Temp")
+hist(variables_post[,2], main = "beta_2", breaks = 50, xlab = "Temp")
+hist(variables_post[,3], main = "beta_3", breaks = 50, xlab = "Temp")
+hist(variables_post[,4], main = "sigma squared", breaks = 50, xlab = "Temp")
+```
+
+#### ii. A scatter plot of the temperature data along with quantiles and median of regression curves
+
+We will generate regression curves by means of the posterior draws of betas.
+
+We can see in the plot that that posterior probability intervals dont contain most of the data points, because they shouldnt. The posterior probability intervals shows where 95% of posterior curves would be placed.
+
+```{r message=FALSE, warning=FALSE}
+plot(Y, x=unlist(data["time"]), main="data, regression and quantiles", xlab = "time", ylab = "temp")
+
+curves = X %*% t(variables_post[,1:3])
+median_temp <- apply(curves,1,median)
+
+lines(x = unlist(data["time"]), y = median_temp, col = "red")
+
+quantiles_temp_novar <- apply(curves,1,quantile, probs =  c(0.025,0.975))
+
+
+lines(x = unlist(data["time"]), y = quantiles_temp_novar[1,], col = "green")
+lines(x = unlist(data["time"]), y = quantiles_temp_novar[2,], col = "green")
+```
+
+### c) Find maximum x point
+
+Finding the x point of a vertex by derivative approach in a parabolic function we can find $\tilde{x}$
+
+```{r message=FALSE, warning=FALSE}
+
+x_tilde =- variables_post[,2]/ (2*variables_post[,3])
+cat("The average time with maximum temperature is", mean(x_tilde), "around half of the year")
+```
+Posterior distribution for this $\tilde{x}$ is:
+```{r message=FALSE, warning=FALSE}
+
+hist(x_tilde, breaks = 200)
+```
+
+### d) Shrinkage of high order terms
+
+
+Theoretically, we could use a posterior mode drawing from a Laplace distribution $\beta \mid \sigma^2, iid\sim Laplace(0,\frac{\sigma^2}{\lambda})$ for higher order terms. This $\lambda$ factor mitigates the effect of parameter overshooting and further overfitting. This approach is analogous to using Lasso regularization.
+
+
+
+## 2. Posterior approximation for classification with logistic regression
+
+### a) 
+
+```{r}
+library(knitr)
+library(mvtnorm)
+
+data_women <- read.table("WomenWork.dat",header=TRUE)
+
+X <- as.matrix(data_women[ ,2:ncol(data_women)])
+Y <- data_women[,1]
+
+Nfeat <- dim(X)[2]
+
+# Setting up the prior
+mu <- as.matrix(rep(0,Nfeat)) # Prior mean vector
+
+init_val <- matrix(0,Nfeat,1)
+thau <- 10
+cov_prior <- diag(Nfeat)*thau^2
+
+LogPostLogistic <- function(betas, y, X, mu, Sigma){
+  linPred <- X%*%betas;
+  logLik <- sum( linPred*y - log(1 + exp(linPred)) );
+  logPrior <- dmvnorm(betas, mu, Sigma, log=TRUE);
+  
+  return(logLik + logPrior)
+}
+
+# Optimization for the beta estimates Hessian
+
+OptimRes <- optim(init_val,LogPostLogistic, gr =NULL, y = Y,X = X,mu = mu,Sigma = cov_prior, method=c("BFGS"), control=list(fnscale=-1), hessian=TRUE)
+
+beta_estimates <- OptimRes$par
+hessian <-  OptimRes$hessian
+hessian_inv <- solve(-hessian)
+
+
+```
+
+
+```{r}
+rownames(beta_estimates) <- colnames(data_women)[2:ncol(data_women)]
+colnames(beta_estimates) <- "coef"
+colnames(hessian_inv) <- rownames(hessian_inv) <- colnames(data_women)[2:ncol(data_women)]
+res_est <- kable(beta_estimates)
+res_hess <- kable(signif(hessian_inv),digits = 5)
+```
+
+beta estimates: 
+
+`r res_est`
+
+
+hessian matrix: 
+
+`r res_hess`
+
+
+
+
+```{r, echo=F }
+
+nDraws <- 10000
+
+#Sample from posterior normal  
+post_beta_draws_child <- rmvnorm(nDraws, beta_estimates, hessian_inv)
+
+interval <- quantile(post_beta_draws_child[, 7], probs = c(0.025, 0.975))
+
+
+glmModel <- glm(Work ~ 0 + ., data = data_women[-2], family = binomial)
+```
+
+95% posterior probability interval of NSmallChild: `r interval`
+
+Yes, its is important because estimated coefficient is far from 0.
+
+### b) 
+
+```{r}
+X_pred <- c(1, 13, 8, 11, 1.1^2, 37, 2, 0) 
+
+Pr_logistic <- function(X,betas){
+  temp <- exp( X%*%t(betas))
+  num <- temp
+  den <- 1 + temp
+  return(num/den)
+}
+
+
+
+posterior_beta_draws <- rmvnorm(nDraws, beta_estimates, hessian_inv)
+
+hist(Pr_logistic(X_pred, posterior_beta_draws), breaks=50, main="Posterior predictive distribution of X_pred")
+```
+
+
+### c)
+
+```{r}
+# prediction draws
+res <- sapply(Pr_logistic(X_pred, posterior_beta_draws), rbinom, size = 8, n = 1) 
+
+
+hist(res, breaks=50,  main="Pos. predictive distribution of # women out of 8 (employed)")
+```
+
+
+
+# Appendix
+
+```{r ref.label=knitr::all_labels(), echo = T, eval = F}
+```
